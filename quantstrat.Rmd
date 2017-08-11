@@ -1,0 +1,662 @@
+---
+title: "Quant_strat"
+always_allow_html: yes
+output: 
+  md_document:
+    variant: markdown_github
+    
+---
+
+```{r setup, include = FALSE}
+library(quantstrat)
+library(quantmod)
+library(knitr)
+library(ggplot2)
+library(tidyverse)
+
+Sys.setenv(TZ = "UTC")
+currency("USD")
+
+init_date <- "2000-12-31"
+start_date <- "2001-01-01"
+end_date <- "2016-12-10"
+init_equity <- 1e4
+adjustment <- TRUE
+
+basic_symbols <- function() {
+  symbols <- c(
+        "IWM", # iShares Russell 2000 Index ETF
+        "QQQ", # PowerShares QQQ TRust, Series 1 ETF
+        "SPY" # SPDR S&P 500 ETF Trust
+    )
+}
+
+enhanced_symbols <- function() {
+  symbols <- c(
+    basic_symbols(), 
+    "TLT", # iShares Barclays 20+ Yr Treas. Bond ETF
+    "XLB", # Materials Select Sector SPDR ETF
+    "XLE", # Energy Select Sector SPDR ETF
+    "XLF", # Financial Select Sector SPDR ETF
+    "XLI", # Industrials Select Sector SPDR ETF
+    "XLK", # Technology  Select Sector SPDR ETF
+    "XLP", # Consumer Staples  Select Sector SPDR ETF
+    "XLU", # Utilities  Select Sector SPDR ETF
+    "XLV", # Health Care  Select Sector SPDR ETF
+    "XLY" # Consumer Discretionary  Select Sector SPDR ETF
+  )
+}
+
+global_symbols <- function() {
+  symbols <- c(
+    enhanced_symbols(), 
+    "EFA", # iShares EAFE
+    "EPP", # iShares Pacific Ex Japan
+    "EWA", # iShares Australia
+    "EWC", # iShares Canada
+    "EWG", # iShares Germany
+    "EWH", # iShares Hong Kong
+    "EWJ", # iShares Japan
+    "EWS", # iShares Singapore
+    "EWT", # iShares Taiwan
+    "EWU", # iShares UK
+    "EWY", # iShares South Korea
+    "EWZ", # iShares Brazil
+    "EZU", # iShares MSCI EMU ETF
+    "IGE", # iShares North American Natural Resources
+    "IYR", # iShares U.S. Real Estate
+    "IYZ", # iShares U.S. Telecom
+    "LQD", # iShares Investment Grade Corporate Bonds
+    "SHY" # iShares 42372 year TBonds
+  )
+}
+
+# Guy Yollin, 2014
+# http://www.r-programming.org/papers
+
+checkBlotterUpdate <- function(port.st = portfolio.st, 
+                               account.st = account.st, 
+                               verbose = TRUE) {
+    
+    ok <- TRUE
+    p <- getPortfolio(port.st)
+    a <- getAccount(account.st)
+    syms <- names(p$symbols)
+    port.tot <- sum(
+        sapply(
+            syms, 
+            FUN = function(x) eval(
+                parse(
+                    text = paste("sum(p$symbols", 
+                                 x, 
+                                 "posPL.USD$Net.Trading.PL)", 
+                                 sep = "$")))))
+    
+    port.sum.tot <- sum(p$summary$Net.Trading.PL)
+    
+    if(!isTRUE(all.equal(port.tot, port.sum.tot))) {
+        ok <- FALSE
+        if(verbose) print("portfolio P&L doesn't match sum of symbols P&L")
+    }
+    
+    initEq <- as.numeric(first(a$summary$End.Eq))
+    endEq <- as.numeric(last(a$summary$End.Eq))
+    
+    if(!isTRUE(all.equal(port.tot, endEq - initEq)) ) {
+        ok <- FALSE
+        if(verbose) print("portfolio P&L doesn't match account P&L")
+    }
+    
+    if(sum(duplicated(index(p$summary)))) {
+        ok <- FALSE
+        if(verbose)print("duplicate timestamps in portfolio summary")
+        
+    }
+    
+    if(sum(duplicated(index(a$summary)))) {
+        ok <- FALSE
+        if(verbose) print("duplicate timestamps in account summary")
+    }
+    return(ok)
+}
+
+chart.ME.custom <- function (Portfolio, Symbol, type = c("MAE", "MFE"), scale = c("cash", 
+    "percent", "tick"), ...) 
+{
+    type = type[1]
+    scale = scale[1]
+    trades <- perTradeStats(Portfolio, Symbol, ...)
+    trades$Pct.Net.Trading.PL <- 100 * trades$Pct.Net.Trading.PL
+    trades$Pct.MAE <- 100 * trades$Pct.MAE
+    trades$Pct.MFE <- 100 * trades$Pct.MFE
+    profitable <- (trades$Net.Trading.PL > 0)
+    switch(scale, cash = {
+        .ylab <- "Profit/Loss (cash)"
+        if (type == "MAE") {
+            .cols <- c("MAE", "Net.Trading.PL")
+            .xlab <- "Drawdown (cash)"
+            .main <- "Maximum Adverse Excursion (MAE)"
+        } else {
+            .cols <- c("MFE", "Net.Trading.PL")
+            .xlab <- "Run Up (cash)"
+            .main <- "Maximum Favourable Excursion (MFE)"
+        }
+    }, percent = {
+        .ylab <- "Profit/Loss (%)"
+        if (type == "MAE") {
+            .cols <- c("Pct.MAE", "Pct.Net.Trading.PL")
+            .xlab <- "Drawdown (%)"
+            .main <- "Maximum Adverse Excursion (MAE)"
+        } else {
+            .cols <- c("Pct.MFE", "Pct.Net.Trading.PL")
+            .xlab <- "Run Up (%)"
+            .main <- "Maximum Favourable Excursion (MFE)"
+        }
+    }, tick = {
+        .ylab <- "Profit/Loss (ticks)"
+        if (type == "MAE") {
+            .cols <- c("tick.MAE", "tick.Net.Trading.PL")
+            .xlab <- "Drawdown (ticks)"
+            .main <- "Maximum Adverse Excursion (MAE)"
+        } else {
+            .cols <- c("tick.MFE", "tick.Net.Trading.PL")
+            .xlab <- "Run Up (ticks)"
+            .main <- "Maximum Favourable Excursion (MFE)"
+        }
+    })
+    .main <- paste(Symbol, .main)
+    plot(abs(trades[, .cols]), type = "n", xlab = .xlab, ylab = .ylab, 
+        main = .main)
+    grid()
+    points(abs(trades[profitable, .cols]), pch = 24, col = "green", 
+        bg = "green", cex = 0.6)
+    points(abs(trades[!profitable, .cols]), pch = 25, col = "red", 
+        bg = "red", cex = 0.6)
+    abline(a = 0, b = 1, lty = "dashed", col = "darkgrey")
+    #legend(x = "bottomright", inset = 0.1, legend = c("Profitable Trade", 
+    #    "Losing Trade"), pch = c(24, 25), col = c("green", "red"), 
+    #    pt.bg = c("green", "red"))
+}
+
+```
+
+# Get data
+
+```{r}
+symbols <- "SPY"
+src <- "google"
+
+getSymbols(Symbols = symbols, 
+           src = src,
+           index.class = "POSIXct",
+           from = start_date,
+           to = end_date, 
+           adjust = adjustment)
+
+#EURUSD$EURUSD.Volume <- 100000
+#EURUSD$EURUSD.Adjusted <- EURUSD$EURUSD.Close
+
+# Remove days with NA
+for (i in symbols) {
+  assign(i, na.omit(get(i)))
+}
+
+stock(symbols,
+      currency = "USD",
+      multiplier = 1)
+
+portfolio.st <- "Port.Luxor"
+account.st <- "Acct.Luxor"
+strategy.st <- "Strat.Luxor"
+
+rm.strat(portfolio.st)
+rm.strat(account.st)
+
+initPortf(name = portfolio.st,
+          symbols = symbols,
+          initDate = init_date)
+
+initAcct(name = account.st,
+         portfolios = portfolio.st,
+         initDate = init_date,
+         initEq = init_equity)
+
+initOrders(portfolio = portfolio.st,portfolio,
+           symbols = symbols,
+           initDate = init_date)
+
+strategy(strategy.st, store = TRUE)
+
+```
+# Add indicators
+
+```{r indicators} 
+.nFast <- 10
+.nSlow <- 30
+.txnFees <- -10
+.orderQty <- 100
+.threshold <- 0.005
+
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)), 
+                               n = quote(.nFast)),
+              label = "nFast")
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)),
+                               n = quote(.nSlow)),
+              label = "nSlow")
+
+```
+
+# Add signals
+
+```{r signals}
+add.signal(strategy = strategy.st,
+           name = "sigCrossover",
+           arguments = list(columns = c("nFast", "nSlow"),
+                            relationship = "gte"),
+           label = "long")
+
+add.signal(strategy = strategy.st,
+           name = "sigCrossover",
+           arguments = list(columns = c("nFast", "nSlow"),
+                            relationship = "lt"),
+           label = "short")
+
+```
+
+# Add rules
+
+```{r rules}
+add.rule(strategy = strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "long",
+                          sigval = TRUE,
+                          orderqty = .orderQty,
+                          ordertype = "stoplimit",
+                          orderside = "long",
+                          threshold = .threshold,
+                          prefer = "High",
+                          TxnFees = .txnFees,
+                          replace = FALSE,
+                          osFUN = osMaxPos,
+                          orderset = "ocolong"),
+         type = "enter",
+         label = "EnterLONG")
+
+add.rule(strategy = strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "short",
+                          sigval = TRUE,
+                          orderqty = -.orderQty,
+                          ordertype = "stoplimit",
+                          orderside = "short",
+                          threshold = .threshold,
+                          prefer = "Low",
+                          TxnFees = .txnFees,
+                          replace = FALSE,
+                          oSFUN = osMaxPos,
+                          orderset = "ocoshort"),
+         type = "enter",
+         label = "EnterSHORT")
+
+add.rule(strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "short",
+                          sigval = TRUE,
+                          orderside = "long",
+                          ordertype = "market",
+                          orderqty = "all",
+                          TxnFees = .txnFees,
+                          replace = TRUE,
+                          orderset = "ocolong"),
+         type = "exit",
+         label = "Exit2SHORT")
+
+add.rule(strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "long",
+                          sigval = TRUE,
+                          orderside = "short",
+                          ordertype = "market",
+                          orderqty = "all",
+                          TxnFees = .txnFees,
+                          replace = TRUE,
+                          orderset = "ocoshort"),
+         type = "exit",
+         label = "Exit2LONG")
+
+
+
+for (symbol in symbols) {
+  addPosLimit(portfolio = portfolio.st, 
+              symbol = symbol,
+              timestamp = init_date,
+              maxpos = .orderQty)
+}
+
+
+```
+
+```{r}
+.paramFastSMA <- seq(3, 30, 1)
+.paramSlowSMA <- seq(20, 80, 5)
+.nSamples <- 5
+
+add.distribution(strategy.st, 
+                 paramset.label = "SMA",
+                 component.type = "indicator",
+                 component.label = "nFast",
+                 variable = list(n = .paramFastSMA),
+                 label = "nFAST")
+
+add.distribution(strategy.st,
+                 paramset.label = "SMA",
+                 component.type = "indicator",
+                 component.label = "nSlow",
+                 variable = list(n = .paramSlowSMA),
+                 label = "nSLOW")
+
+add.distribution.constraint(strategy.st,
+                            paramset.label = "SMA",
+                            distribution.label.1 = "nFAST",
+                            distribution.label.2 = "nSLOW",
+                            operator = "<",
+                            label = "SMA.Constraint")
+```
+
+```{r paramset, message = FALSE, results = "hide", include = FALSE}
+cwd <- getwd()
+setwd("/R/quant/_data/")
+results_file <- paste(paste("results_nostoploss", paste(symbols, collapse="_"), sep="_"), strategy.st, "RData", sep = ".")
+force = FALSE
+if (file.exists(results_file) && !force) {
+  load(results_file)
+} else {
+  results <- apply.paramset(strategy.st,
+                            paramset.label = "SMA",
+                            portfolio.st = portfolio.st,
+                            account.st = account.st, 
+                            nsamples = 0)
+  if(checkBlotterUpdate(portfolio.st, account.st, verbose = TRUE)) {
+    save(list = "results", file = results_file)
+    save.strategy(strategy.st)
+  }
+}
+
+setwd(cwd)
+```
+
+```{r visualize}
+# kable(t(results$tradeStats))
+
+# Visualize results
+
+ggplot(results$tradeStats, aes(x = nFAST, y = nSLOW)) + 
+  geom_tile(aes(fill = Net.Trading.PL), colour = "white") + 
+  scale_fill_gradient2(low = "red3", mid = "white", high = "steelblue", midpoint = 0.5) + 
+  ggtitle("Net Trading PnL")
+
+ggplot(results$tradeStats, aes(nFAST, nSLOW)) + 
+  geom_tile(aes(fill = Profit.To.Max.Draw), colour = "white") + 
+  scale_fill_gradient2(low = "red3", mid = "white", high = "steelblue", midpoint = 0.5) + 
+  ggtitle("Profit to Max Draw")
+
+ggplot(results$tradeStats, aes(x = nFAST, y = nSLOW)) + 
+  geom_tile(aes(fill = Max.Drawdown), colour = "white") + 
+  scale_fill_gradient2(low = "red3", mid = "white", high = "steelblue", midpoint = 0.5) + 
+  ggtitle("Drawdown")
+
+ggplot(results$tradeStats, aes(x = nFAST, y = nSLOW)) + 
+  geom_tile(aes(fill = log(Ann.Sharpe)), colour = "white") + 
+  scale_fill_gradient(low = "white", high = "steelblue") + 
+  ggtitle("Sharpe Ratio")
+
+```
+
+```{r apply_strategy_single, include = FALSE}
+.nFast <- 20
+.nSlow <- 60
+
+rm.strat(portfolio.st)
+rm.strat(account.st)
+initPortf(name = portfolio.st,
+          symbols = symbols,
+          initDate = init_date)
+initAcct(name = account.st,
+         portfolios = portfolio.st,
+         initDate = init_date, 
+         initEq = init_equity)
+initOrders(portfolio = portfolio.st,
+           initDate = init_date)
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)), 
+                               n = quote(.nFast)),
+              label = "nFast")
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)),
+                               n = quote(.nSlow)),
+              label = "nSlow")
+
+stock(symbols,
+      currency = "USD",
+      multiplier = 1)
+for (symbol in symbols) {
+  addPosLimit(portfolio = portfolio.st, 
+              symbol = symbol,
+              timestamp = init_date,
+              maxpos = .orderQty)
+}
+
+results_single <- applyStrategy(strategy.st, portfolios = portfolio.st)
+
+updatePortf(portfolio.st)
+updateAcct(account.st)
+updateEndEq(account.st)
+```
+
+
+```{r analyse_trade}
+#chart.Posn(portfolio.st, Symbol = "SPY", Dates = "2008-01-01::2008-07-01",
+#           TA = "add_SMA(n = 10, col = 2); add_SMA(n = 30, col = 4)")
+
+chart.Posn(portfolio.st, Symbol = "SPY",  Dates = paste(start_date, end_date, sep="::"),
+           TA = "add_SMA(n = .nFast, col = 2); add_SMA(n = .nSlow, col = 4)")
+
+```
+```{r}
+le <- as.data.frame(mktdata["2008-02-25::2008-03-07", c(1:4, 6:9)])
+DT::datatable(le, 
+              rownames = TRUE,
+              extensions = c("Scroller", "FixedColumns"), 
+              options = list(pageLength = 5, 
+                             autoWidth = TRUE, 
+                             deferRender = TRUE, 
+                             scrollX = 200, 
+                             scroller = TRUE,
+                             fixedColumns = TRUE), 
+              caption = htmltools::tags$caption(
+                  "Table 6.1: mktdata object for Feb. 25, 2008 to Mar. 7, 2008"))
+```
+```{r}
+ob <- data.table::as.data.table(getOrderBook(portfolio.st)[[portfolio.st]]$SPY)
+DT::datatable(ob, 
+              rownames = FALSE,
+              filter = "top",
+              extensions = c("Scroller", "FixedColumns"), 
+              options = list(pageLength = 5, 
+                             autoWidth = TRUE, 
+                             deferRender = TRUE, 
+                             scrollX = 200, 
+                             scroller = TRUE, 
+                             fixedColumns = TRUE), 
+              caption = htmltools::tags$caption(
+                  "Table 6.2: Order book for SPY"))
+rets <- PortfReturns(account.st)
+charts.PerformanceSummary(rets, colorset = bluefocus)
+```
+```{r tradeStats} 
+tstats <- tradeStats(portfolio.st)
+kable(t(tstats))
+
+```
+```{r}
+pts <- perTradeStats(portfolio.st, Symbol = "SPY")
+kable(pts, booktab = TRUE, caption = "SPY")
+
+```
+
+```{r}
+chart.ME.custom(Portfolio = portfolio.st,
+         Symbol = "SPY",
+         type = "MAE",
+         scale = "percent")
+
+chart.ME.custom(Portfolio = portfolio.st, Symbol = "SPY", type = "MFE", scale = "percent")
+
+
+```
+
+```{r apply_strategy_with_stoploss, include = FALSE}
+.nFast <- 20
+.nSlow <- 60
+
+rm.strat(portfolio.st)
+rm.strat(account.st)
+initPortf(name = portfolio.st,
+          symbols = symbols,
+          initDate = init_date)
+initAcct(name = account.st,
+         portfolios = portfolio.st,
+         initDate = init_date, 
+         initEq = init_equity)
+initOrders(portfolio = portfolio.st,
+           initDate = init_date)
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)), 
+                               n = quote(.nFast)),
+              label = "nFast")
+
+add.indicator(strategy = strategy.st,
+              name = "SMA",
+              arguments = list(x = quote(Cl(mktdata)),
+                               n = quote(.nSlow)),
+              label = "nSlow")
+
+.stopLoss <- 0.06
+.trailingStop <- 0.1
+
+add.rule(strategy = strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "long",
+                          sigval = TRUE,
+                          replace = FALSE,
+                          orderside = "long",
+                          ordertype = "stoptrailing",
+                          tmult = TRUE,
+                          threshold = quote(.trailingStop),
+                          orderqty = "all",
+                          orderset = "ocolong"),
+         type = "chain",
+         parent = "EnterLONG",
+         label = "StopTrailingLONG",
+         enabled = FALSE)
+
+add.rule(strategy = strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "short",
+                          sigval = TRUE,
+                          replace = FALSE,
+                          orderside = "short",
+                          ordertype = "stoptrailing",
+                          tmult = TRUE,
+                          threshold = quote(.trailingStop),
+                          orderqty = "all",
+                          orderset = "ocoshort"),
+         type = "chain",
+         parent = "EnterSHORT",
+         label = "StopTrailingSHORT",
+         enabled = FALSE)
+                         
+
+add.rule(strategy.st,
+         name = "ruleSignal",
+         arguments = list(sigcol = "long", 
+                          sigval = TRUE,
+                          replace = FALSE,
+                          orderside = "long",
+                          ordertype = "stoplimit",
+                          tmult = TRUE, 
+                          threshold = quote(.stopLoss),
+                          TxnFees = .txnFees,
+                          orderqty = "all",
+                          orderset = "ocolong"),
+         type = "chain",
+         parent = "EnterLONG",
+         label = "StopLossLONG",
+         enabled = FALSE)
+
+add.rule(strategy.st, 
+         name = "ruleSignal",
+         arguments = list(sigcol = "short",
+                          sigval = TRUE,
+                          replace = FALSE,
+                          orderside = "short",
+                          ordertype = "stoplimit",
+                          tmult = TRUE,
+                          threshold = quote(.stopLoss),
+                          TxnFees = .txnFees,
+                          orderqty = "all",
+                          orderset = "ocoshort"),
+         type = "chain",
+         parent = "EnterSHORT",
+         label = "StopLossSHORT",
+         enabled = FALSE)
+
+enable.rule(strategy.st,
+            type = "chain",
+            label = "StopLoss")
+
+enable.rule(strategy.st,
+            type = "chain",
+            label = "StopTrailing")
+
+stock(symbols,
+      currency = "USD",
+      multiplier = 1)
+for (symbol in symbols) {
+  addPosLimit(portfolio = portfolio.st, 
+              symbol = symbol,
+              timestamp = init_date,
+              maxpos = .orderQty)
+}
+
+results_single <- applyStrategy(strategy.st, portfolios = portfolio.st)
+updatePortf(portfolio.st)
+updateAcct(account.st)
+updateEndEq(account.st)
+```
+
+```{r visualize_stop_loss}
+chart.Posn(portfolio.st, Symbol = "SPY",  Dates = paste(start_date, end_date, sep="::"),
+           TA = "add_SMA(n = .nFast, col = 2); add_SMA(n = .nSlow, col = 4)")
+
+chart.ME.custom(Portfolio = portfolio.st,
+         Symbol = "SPY",
+         type = "MAE",
+         scale = "percent")
+
+
+chart.ME.custom(Portfolio = portfolio.st, Symbol = "SPY", type = "MFE", scale = "percent")
+
+```
